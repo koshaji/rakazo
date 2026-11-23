@@ -13,6 +13,7 @@ on:
       - .github/workflows/mobile-ios-simulator.yml
       - apps/mobile/app.json
       - apps/mobile/app.config.ts
+      - apps/mobile/assets/**
       - apps/mobile/eas.json
       - apps/mobile/package.json
       - apps/mobile/plugins/**
@@ -22,6 +23,7 @@ on:
       - apps/mobile/ios-watch/**
       - apps/mobile/ios-widgets/**
       - apps/mobile/locales/**
+      - packages/ui-tokens/assets/**
       - pnpm-lock.yaml
   workflow_dispatch:
 
@@ -84,17 +86,25 @@ jobs:
             test "$(read_plist ITSAppUsesNonExemptEncryption)" = "false" ||
               { echo "::error::ITSAppUsesNonExemptEncryption is not false"; exit 1; }
           fi
-          # Prompts from app.json's infoPlist, plus the ones the config plugins add.
+          # Prompts from app.json's infoPlist, plus the ones the config plugins add (image picker, audio,
+          # speech recognition, media library, calendar).
           prompts="$(app_json 'Object.keys(c.ios.infoPlist ?? {}).filter((k) => k.endsWith("UsageDescription")).join(" ")')"
-          for key in $prompts NSCameraUsageDescription NSPhotoLibraryUsageDescription NSMicrophoneUsageDescription \
-            NSSpeechRecognitionUsageDescription; do
+          for key in $prompts NSCameraUsageDescription NSPhotoLibraryUsageDescription NSPhotoLibraryAddUsageDescription \
+            NSMicrophoneUsageDescription NSSpeechRecognitionUsageDescription NSCalendarsUsageDescription \
+            NSCalendarsFullAccessUsageDescription NSRemindersUsageDescription NSRemindersFullAccessUsageDescription; do
             test -n "$(read_plist "$key")" || { echo "::error::$key is missing or empty in Info.plist"; exit 1; }
           done
-          # Every language in app.json's locales gets its translated prompts in the bundle.
+          # Every language in app.json's locales gets each of its translated prompts in the bundle.
           for lang in $(app_json 'Object.keys(c.locales ?? {}).join(" ")'); do
             strings="$app/$lang.lproj/InfoPlist.strings"
             test -f "$strings" || { echo "::error::No $lang permission prompts in the app"; exit 1; }
             plutil -lint "$strings" >/dev/null
+            source_file="$(app_json "c.locales['$lang']")"
+            keys="$(node -e 'console.log(Object.keys(require(process.argv[1]).ios ?? {}).join(" "))' "$source_file")"
+            for key in $keys; do
+              test -n "$(plutil -extract "$key" raw -o - "$strings" 2>/dev/null)" ||
+                { echo "::error::$key is missing or empty in the $lang permission prompts"; exit 1; }
+            done
           done
           echo "OK: $(basename "$app") $(read_plist CFBundleShortVersionString), unsigned Simulator build"
           ditto -c -k --keepParent "$app" "$RUNNER_TEMP/ios-simulator-unsigned.zip"
